@@ -58,51 +58,54 @@ const SAND = "#F3E9D6";
 /* returning a full record, rather than guessing which case to search.    */
 /* ---------------------------------------------------------------------- */
 
-/* Computes dates relative to whenever the demo actually runs, so a mock
-   "pending" complaint never silently drifts past its own SLA window no
-   matter how much later this artifact gets used. */
+/* Computes dates relative to whenever the demo actually runs, so mock case
+   data always reads as recent (opened dates stay within the last 30 days)
+   no matter how much later this artifact gets used, instead of drifting
+   into a fixed past year. */
 function daysAgo(n) {
   const d = new Date();
   d.setDate(d.getDate() - n);
   return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+const CURRENT_YEAR = new Date().getFullYear();
+
 const MOCK_CASE_DB = {
-  "SW-2026-004821": {
-    case_id: "SW-2026-004821",
+  [`SW-${CURRENT_YEAR}-004821`]: {
+    case_id: `SW-${CURRENT_YEAR}-004821`,
     category: "fuel_allowance",
     status: "Suspended",
-    opened: "15 Dec 2025",
+    opened: daysAgo(9),
     reason_codes: ["MOCE-ELG-45"],
     case_history: [
-      "Household composition updated (spouse employment status changed) 94 days ago — no revalidation on file",
-      "Fuel Allowance active at the AED 600/month tier (Special 95 in the AED 2.86–3.60/litre bracket) since Jan 2023",
+      "Household composition updated (spouse employment status changed) 9 days ago — no revalidation on file",
+      "Fuel Allowance active at the AED 600/month tier (Special 95 in the AED 2.86–3.60/litre bracket) prior to suspension",
     ],
     previous_complaints: [],
     appeals: [`Complaint filed ${daysAgo(3)} — pending officer review (5 working-day SLA, not yet elapsed)`],
   },
-  "SW-2023-000937": {
-    case_id: "SW-2023-000937",
+  [`SW-${CURRENT_YEAR}-000937`]: {
+    case_id: `SW-${CURRENT_YEAR}-000937`,
     category: "food_allowance",
     status: "Suspended",
-    opened: "01 Mar 2023",
+    opened: daysAgo(22),
     reason_codes: ["MOCE-ELG-08"],
     case_history: [
       "Household income reassessment recorded AED 26,400/month — above the AED 25,000 threshold",
-      "Food Allowance active continuously since Mar 2023 (AED 500 primary + AED 500 spouse + AED 250 x 2 children)",
+      "Food Allowance active continuously prior to suspension (AED 500 primary + AED 500 spouse + AED 250 x 2 children)",
     ],
-    previous_complaints: [`${daysAgo(90)}: payment delay to Lulu Hypermarket account — resolved within 4 days`],
+    previous_complaints: [`${daysAgo(15)}: payment delay to Lulu Hypermarket account — resolved within 4 days`],
     appeals: [],
   },
-  "SW-2024-001552": {
-    case_id: "SW-2024-001552",
+  [`SW-${CURRENT_YEAR}-001552`]: {
+    case_id: `SW-${CURRENT_YEAR}-001552`,
     category: "electricity_water_allowance",
     status: "Suspended",
-    opened: "10 Feb 2024",
+    opened: daysAgo(28),
     reason_codes: ["MOCE-ELG-08"],
     case_history: [
       "Latest DEWA/utility feed shows monthly consumption cost of AED 460 — above the AED 400 subsidy cap",
-      "Electricity & Water Allowance active since Feb 2024",
+      "Electricity & Water Allowance active prior to suspension",
     ],
     previous_complaints: [],
     appeals: [],
@@ -427,19 +430,21 @@ function buildSystemPrompt(authState, language = "en") {
 
 ${authLine}
 
-LANGUAGE: The citizen's selected interface language is ${interfaceLanguage}. Regardless of that setting, always detect the language of the citizen's MOST RECENT message and reply fully in that same language — if they write in Arabic, reply entirely in clear, natural Modern Standard Arabic; if they write in English, reply in English. If a message is a greeting or otherwise gives no clear language cue, default to the interface language above. Never mix the two languages within one reply. This rule applies ONLY to the natural-language text of your reply — the <use_tool name="...">{...}</use_tool> tag syntax, JSON field names/keys, rule IDs (e.g. MOCE-ELG-45), and case IDs (e.g. SW-2024-001552) must always stay exactly as specified, in English/ASCII, no matter which language you're replying in.
+LANGUAGE: The citizen's selected interface language is ${interfaceLanguage}. Regardless of that setting, always detect the language of the citizen's MOST RECENT message and reply fully in that same language — if they write in Arabic, reply entirely in clear, natural Modern Standard Arabic; if they write in English, reply in English. If a message is a greeting or otherwise gives no clear language cue, default to the interface language above. Never mix the two languages within one reply. This rule applies ONLY to the natural-language text of your reply — the <use_tool name="...">{...}</use_tool> tag syntax, JSON field names/keys, rule IDs (e.g. MOCE-ELG-45), and case IDs (e.g. SW-${CURRENT_YEAR}-001552) must always stay exactly as specified, in English/ASCII, no matter which language you're replying in.
+
+FORMATTING: This applies to EVERY natural-language reply you write, not just the final case-resolution message — greetings, FAQ answers, and the numbered case list all count. Use light Markdown to make replies easy to scan: **bold** for key terms (rule IDs, amounts, case IDs, dates), "- " for bullet lists, and "1. " "2. " for numbered lists (e.g. when presenting the citizen's cases or a list of steps/documents). Never use headings, code blocks, tables, or literal JSON in a reply — only bold and lists.
 
 You have five actions available. To use one, output EXACTLY one line in this format and then STOP immediately — write nothing else, not even a newline:
 <use_tool name="ACTION_NAME">{...json args...}</use_tool>
 
-Worked example — calling get_case_details for case SW-2024-001552, character for character:
-<use_tool name="get_case_details">{"case_id": "SW-2024-001552"}</use_tool>
+Worked example — calling get_case_details for case SW-${CURRENT_YEAR}-001552, character for character:
+<use_tool name="get_case_details">{"case_id": "SW-${CURRENT_YEAR}-001552"}</use_tool>
 Match that punctuation exactly: a ">" (never ":") immediately after the closing quote of name, then the raw JSON object, then "</use_tool>". Never wrap it as {"name": "...", "arguments": {...}} or any other JSON-call shape — the literal <use_tool name="...">...</use_tool> text is the only format this system understands.
 
 Available actions:
 1. request_login {} — use when the citizen wants you to check, resolve, or act on their own specific case, but they are not yet authenticated.
 2. get_case_details {"case_id": "..."} — fetches full details for ONE specific case. Only call this once you actually have a case ID — never guess one.
-3. list_citizen_cases {} — fallback only: returns the citizen's case IDs/category/status/opened-date, for when they don't know or don't have their case number. Use this to help them find the right one, not as your default first move.
+3. list_citizen_cases {} — returns the citizen's case IDs/category/status/opened-date. This is your default way to find the right case once authenticated — most citizens won't remember a reference number, so prefer this over asking them to recall one.
 4. search_knowledge_base {"query": "short description of the issue"} — safe anytime, for FAQs or case research.
 5. query_enterprise_data {"query": "short description"} — optional, only if broader trend context helps.
 6. submit_decision {"category": "...", "confidence": 0-100, "decision": "auto_response" | "human_review", "rule_cited": "...", "reasoning": "..."} — only for resolving a specific case, never for general FAQs.
@@ -449,11 +454,11 @@ Process:
 - General question about policy, eligibility rules, or how something works: answer directly (optionally using search_knowledge_base first). No authentication, no submit_decision.
 - Citizen clearly wants to check or resolve THEIR OWN specific case, or wants to file/raise a complaint or concern about their own situation (e.g. "check my case", "my fuel allowance was stopped", "I want to file a complaint"), and is not authenticated: you MUST actually call request_login using the exact <use_tool name="request_login">{}</use_tool> format and stop there. Do not call get_case_details or submit_decision first, and do not instead just tell them in plain text that they need to log in — a prose sentence about logging in does not show them the real UAE Pass login button, only the actual tool call does.
 - Do NOT call request_login just because a message mentions allowances, complaints, or cases in general terms — only trigger it once the citizen clearly means their own case/situation, not a hypothetical or general question about how something works. But once you've decided it IS their own case/situation, commit to the real tool call — don't hedge with a text-only "please log in" reply.
-- Once request_login succeeds, you'll be told their name in the tool result. Do not ask them to repeat what they already told you before logging in — that violates the "Ask Once" principle. But a case ID is different information they haven't given you yet, so:
-  - If they haven't given you a case/reference number, your final reply for this turn should be ONLY a brief greeting by name plus a request for their case or reference number (format looks like SW-YYYY-NNNNNN), mentioning briefly what their issue was about if they already said. Do not call any lookup tool yet. Wait for their reply.
-  - If their message already contains something that looks like a case number, skip straight to get_case_details with it.
-- If the citizen provides a case number: call get_case_details with it directly. If it's not found, tell them plainly and offer to look up their cases instead (list_citizen_cases).
-- If the citizen says they don't have their case number, don't know it, or ask you to just look: call list_citizen_cases, then present the short list (case ID, category, status) in your reply and ask which one they mean — do not fetch full details for more than one case without them choosing. Only call get_case_details once they've indicated which case ID.
+- Once request_login succeeds, you'll be told their name in the tool result. Do not ask them to repeat what they already told you before logging in — that violates the "Ask Once" principle. A case ID is different information though, so:
+  - If their message already contains something that looks like a case number (format SW-YYYY-NNNNNN), skip straight to get_case_details with it.
+  - Otherwise, do NOT ask them to type or recall a case/reference number — most citizens won't remember it. Instead call list_citizen_cases right away. Then, in your reply, open with a brief professional greeting by name and a sentence of context before the list — e.g. "Hello {name}, I found {n} cases under your profile:" — then the numbered list (e.g. "1. SW-${CURRENT_YEAR}-004821 — Fuel Allowance · Suspended"), then ask which one they'd like to proceed with (mentioning briefly what their issue was about if they already said). Never dump the numbered list with no greeting or lead-in — always frame it professionally. Do not call get_case_details yet. Wait for their reply.
+- If the citizen provides a case number directly at any point: call get_case_details with it. If it's not found, tell them plainly and offer to list their cases instead (list_citizen_cases).
+- After presenting a numbered list of cases, wait for them to choose — do not fetch full details for more than one case without them choosing. They may reply with the number, the case ID, or a description of the issue; match it to the right case_id, then call get_case_details for that one case.
 - Once you have the specific case's full details: call search_knowledge_base, optionally query_enterprise_data, then call submit_decision exactly once (confidence >= 80 -> auto_response, otherwise human_review). Only after submit_decision has run, write a short plain-language reply: explain what happened, cite the rule in plain terms, and give next steps. If human_review, say it's been sent to an officer and note the real Complaints Service SLA of 5 working days. Keep it under 120 words. Never mention tools, MCP, or system internals. You may use **bold** for key terms (like rule IDs or amounts) and "- " bullet points for lists of steps or documents, but never JSON or tags.
 
 Today's date is ${new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" })}. Use this to reason about elapsed time accurately — e.g. whether a complaint's SLA window has already passed. Trust the dates/status in tool results as already accurate; don't assume a "pending" status is stale just because a case was opened a while ago.
