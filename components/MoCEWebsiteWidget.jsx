@@ -58,51 +58,54 @@ const SAND = "#F3E9D6";
 /* returning a full record, rather than guessing which case to search.    */
 /* ---------------------------------------------------------------------- */
 
-/* Computes dates relative to whenever the demo actually runs, so a mock
-   "pending" complaint never silently drifts past its own SLA window no
-   matter how much later this artifact gets used. */
+/* Computes dates relative to whenever the demo actually runs, so mock case
+   data always reads as recent (opened dates stay within the last 30 days)
+   no matter how much later this artifact gets used, instead of drifting
+   into a fixed past year. */
 function daysAgo(n) {
   const d = new Date();
   d.setDate(d.getDate() - n);
   return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+const CURRENT_YEAR = new Date().getFullYear();
+
 const MOCK_CASE_DB = {
-  "SW-2026-004821": {
-    case_id: "SW-2026-004821",
+  [`SW-${CURRENT_YEAR}-004821`]: {
+    case_id: `SW-${CURRENT_YEAR}-004821`,
     category: "fuel_allowance",
     status: "Suspended",
-    opened: "15 Dec 2025",
+    opened: daysAgo(9),
     reason_codes: ["MOCE-ELG-45"],
     case_history: [
-      "Household composition updated (spouse employment status changed) 94 days ago — no revalidation on file",
-      "Fuel Allowance active at the AED 600/month tier (Special 95 in the AED 2.86–3.60/litre bracket) since Jan 2023",
+      "Household composition updated (spouse employment status changed) 9 days ago — no revalidation on file",
+      "Fuel Allowance active at the AED 600/month tier (Special 95 in the AED 2.86–3.60/litre bracket) prior to suspension",
     ],
     previous_complaints: [],
     appeals: [`Complaint filed ${daysAgo(3)} — pending officer review (5 working-day SLA, not yet elapsed)`],
   },
-  "SW-2023-000937": {
-    case_id: "SW-2023-000937",
+  [`SW-${CURRENT_YEAR}-000937`]: {
+    case_id: `SW-${CURRENT_YEAR}-000937`,
     category: "food_allowance",
     status: "Suspended",
-    opened: "01 Mar 2023",
+    opened: daysAgo(22),
     reason_codes: ["MOCE-ELG-08"],
     case_history: [
       "Household income reassessment recorded AED 26,400/month — above the AED 25,000 threshold",
-      "Food Allowance active continuously since Mar 2023 (AED 500 primary + AED 500 spouse + AED 250 x 2 children)",
+      "Food Allowance active continuously prior to suspension (AED 500 primary + AED 500 spouse + AED 250 x 2 children)",
     ],
-    previous_complaints: [`${daysAgo(90)}: payment delay to Lulu Hypermarket account — resolved within 4 days`],
+    previous_complaints: [`${daysAgo(15)}: payment delay to Lulu Hypermarket account — resolved within 4 days`],
     appeals: [],
   },
-  "SW-2024-001552": {
-    case_id: "SW-2024-001552",
+  [`SW-${CURRENT_YEAR}-001552`]: {
+    case_id: `SW-${CURRENT_YEAR}-001552`,
     category: "electricity_water_allowance",
     status: "Suspended",
-    opened: "10 Feb 2024",
+    opened: daysAgo(28),
     reason_codes: ["MOCE-ELG-08"],
     case_history: [
       "Latest DEWA/utility feed shows monthly consumption cost of AED 460 — above the AED 400 subsidy cap",
-      "Electricity & Water Allowance active since Feb 2024",
+      "Electricity & Water Allowance active prior to suspension",
     ],
     previous_complaints: [],
     appeals: [],
@@ -186,6 +189,15 @@ function mockEnterpriseData() {
 const MODEL = "claude-sonnet-5"; // real public API model — verify current model IDs at https://docs.claude.com if this changes
 const MOCK_CITIZEN_NAME = "Ahmed Al Mansoori";
 
+/* Tools that touch a specific citizen's case data or record a resolution.
+   The system prompt already tells the model not to call these unless
+   authenticated, but that's guidance, not enforcement — a model can ignore
+   it (e.g. a citizen pastes a reference number and a weaker model skips
+   straight to get_case_details). This list is the actual code-level gate
+   in runAgentLoop below, so unauthenticated case lookups are impossible
+   regardless of model behavior. */
+const PROTECTED_TOOLS = ["get_case_details", "list_citizen_cases", "submit_decision"];
+
 /* ---------------------------------------------------------------------- */
 /* LLM provider settings — user-supplied API keys, held only in           */
 /* sessionStorage (cleared when the tab closes) and sent per-request to    */
@@ -195,7 +207,134 @@ const MOCK_CITIZEN_NAME = "Ahmed Al Mansoori";
 /* ---------------------------------------------------------------------- */
 
 const SETTINGS_STORAGE_KEY = "moce_llm_settings";
-const DEFAULT_LLM_SETTINGS = { anthropicKey: "", openaiKey: "", provider: "auto" };
+const DEFAULT_LLM_SETTINGS = { anthropicKey: "", openaiKey: "", provider: "auto", language: "en" };
+
+/* ---------------------------------------------------------------------- */
+/* i18n — English / Arabic UI strings for the chat widget. The citizen    */
+/* can still type in either language regardless of this toggle; it only   */
+/* sets the widget chrome and the assistant's default/greeting language    */
+/* (see the LANGUAGE directive in buildSystemPrompt, which detects and     */
+/* matches whatever language the citizen actually writes in).             */
+/* ---------------------------------------------------------------------- */
+
+const TRANSLATIONS = {
+  en: {
+    dir: "ltr",
+    headerTitle: "MoCE Assistant",
+    headerSubtitleAuth: (name) => `${name} · Verified`,
+    headerSubtitleGuest: "Ask about Social Welfare",
+    signOut: "Sign out",
+    newConversationTitle: "Start a new conversation",
+    settingsTitle: "LLM provider settings",
+    languageToggleTitle: "Switch to Arabic",
+    emptyStateText: "Ask about the Social Welfare Program, or check your own case.",
+    examples: ["What's the income threshold for the Inflation Allowance?", "My Fuel Allowance was stopped incorrectly."],
+    inputPlaceholder: "Type your question…",
+    loginPrompt: "Verify your identity to continue",
+    loginButton: "Continue with UAE Pass",
+    feedbackHelpful: "Helpful",
+    feedbackNotHelpful: "Not helpful",
+    feedbackRecorded: "Added to evaluation dataset.",
+    signedOutDivider: "Signed out",
+    thinking: "Thinking…",
+    workingCase: "Working through the case",
+    workedCase: "Worked through the case",
+    lookingInto: "Looking into that",
+    lookedInto: "Looked into that",
+    stepLabel: (n) => `${n} step${n > 1 ? "s" : ""}`,
+    followUpsResolved: ["Can I appeal this decision?", "What documents do I need?", "How long will the review take?"],
+    followUpsUnresolved: ["Can you check my own case?", "What's the appeal window for this rule?"],
+    toolLabels: {
+      operationalRetrieval: "Operational Retrieval",
+      caseDirectory: "Case Directory",
+      knowledgeRetrieval: "Knowledge Retrieval",
+      enterpriseData: "Enterprise Data",
+      aiInferencing: "AI Inferencing",
+    },
+    reasoningComplete: "Reasoning complete — routing case.",
+    autoResponse: "Auto-response",
+    humanReview: "Routed to human review",
+    citesRule: (rule) => `· cites ${rule}`,
+    confidenceEval: "Confidence Evaluation",
+    high: "HIGH",
+    medium: "MEDIUM",
+    low: "LOW",
+    errorGeneric: "Something went wrong. Please try again.",
+    errorTooManySteps: "Took too many steps. Please try again.",
+    errorFallback: "Couldn't reach the agent. Please try again.",
+    notFound: (id) => `No case found with ID ${id}.`,
+    settingsPanel: {
+      title: "LLM Provider Settings",
+      description:
+        "Keys entered here are stored only in this browser tab (sessionStorage) and sent directly to this app's own server with each message. They're cleared automatically when you close the tab. Leave a field blank to use the server's configured key, if any.",
+      anthropicLabel: "Anthropic API key",
+      openaiLabel: "OpenAI API key (gpt-4o-mini)",
+      providerLabel: "Preferred provider",
+      providerAuto: "Auto (Anthropic first, then gpt-4o-mini)",
+      providerAnthropic: "Anthropic (Claude)",
+      providerOpenai: "OpenAI (gpt-4o-mini)",
+      save: "Save settings",
+    },
+  },
+  ar: {
+    dir: "rtl",
+    headerTitle: "مساعد الوزارة",
+    headerSubtitleAuth: (name) => `${name} · موثّق`,
+    headerSubtitleGuest: "اسأل عن الرعاية الاجتماعية",
+    signOut: "تسجيل الخروج",
+    newConversationTitle: "بدء محادثة جديدة",
+    settingsTitle: "إعدادات مزوّد الذكاء الاصطناعي",
+    languageToggleTitle: "التبديل إلى الإنجليزية",
+    emptyStateText: "اسأل عن برنامج الرعاية الاجتماعية، أو تحقّق من حالتك الخاصة.",
+    examples: ["ما هو حد الدخل المؤهل لبدل التضخم؟", "تم إيقاف بدل الوقود الخاص بي عن طريق الخطأ."],
+    inputPlaceholder: "اكتب سؤالك…",
+    loginPrompt: "تحقّق من هويتك للمتابعة",
+    loginButton: "المتابعة عبر UAE Pass",
+    feedbackHelpful: "مفيد",
+    feedbackNotHelpful: "غير مفيد",
+    feedbackRecorded: "تمت الإضافة إلى مجموعة بيانات التقييم.",
+    signedOutDivider: "تم تسجيل الخروج",
+    thinking: "جارٍ التفكير…",
+    workingCase: "جارٍ معالجة الحالة",
+    workedCase: "تمت معالجة الحالة",
+    lookingInto: "جارٍ البحث في ذلك",
+    lookedInto: "تم البحث في ذلك",
+    stepLabel: (n) => `${n} ${n > 1 ? "خطوات" : "خطوة"}`,
+    followUpsResolved: ["هل يمكنني الاعتراض على هذا القرار؟", "ما هي المستندات التي أحتاجها؟", "كم من الوقت ستستغرق المراجعة؟"],
+    followUpsUnresolved: ["هل يمكنك التحقق من حالتي الخاصة؟", "ما هي مهلة الاعتراض على هذه القاعدة؟"],
+    toolLabels: {
+      operationalRetrieval: "الاسترجاع التشغيلي",
+      caseDirectory: "دليل الحالات",
+      knowledgeRetrieval: "استرجاع المعرفة",
+      enterpriseData: "بيانات المؤسسة",
+      aiInferencing: "الاستدلال بالذكاء الاصطناعي",
+    },
+    reasoningComplete: "اكتمل التحليل — جارٍ توجيه الحالة.",
+    autoResponse: "رد تلقائي",
+    humanReview: "تمت الإحالة إلى مراجعة بشرية",
+    citesRule: (rule) => `· استناداً إلى ${rule}`,
+    confidenceEval: "تقييم مستوى الثقة",
+    high: "مرتفع",
+    medium: "متوسط",
+    low: "منخفض",
+    errorGeneric: "حدث خطأ ما. يرجى المحاولة مرة أخرى.",
+    errorTooManySteps: "استغرقت العملية خطوات كثيرة جدًا. يرجى المحاولة مرة أخرى.",
+    errorFallback: "تعذّر الوصول إلى المساعد. يرجى المحاولة مرة أخرى.",
+    notFound: (id) => `لم يتم العثور على حالة بالرقم ${id}.`,
+    settingsPanel: {
+      title: "إعدادات مزوّد الذكاء الاصطناعي",
+      description:
+        "يتم تخزين المفاتيح المُدخلة هنا فقط في علامة تبويب المتصفح الحالية (sessionStorage) وتُرسل مباشرة إلى خادم هذا التطبيق مع كل رسالة. تُمسح تلقائيًا عند إغلاق علامة التبويب. اترك الحقل فارغًا لاستخدام مفتاح الخادم المُعدّ مسبقًا، إن وُجد.",
+      anthropicLabel: "مفتاح Anthropic API",
+      openaiLabel: "مفتاح OpenAI API (gpt-4o-mini)",
+      providerLabel: "المزوّد المفضّل",
+      providerAuto: "تلقائي (Anthropic أولاً، ثم gpt-4o-mini)",
+      providerAnthropic: "Anthropic (Claude)",
+      providerOpenai: "OpenAI (gpt-4o-mini)",
+      save: "حفظ الإعدادات",
+    },
+  },
+};
 
 function loadLlmSettings() {
   if (typeof window === "undefined") return DEFAULT_LLM_SETTINGS;
@@ -212,26 +351,25 @@ function saveLlmSettings(settings) {
   window.sessionStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
 }
 
-function SettingsPanel({ settings, onSave, onClose }) {
+function SettingsPanel({ settings, onSave, onClose, t }) {
   const [anthropicKey, setAnthropicKey] = useState(settings.anthropicKey);
   const [openaiKey, setOpenaiKey] = useState(settings.openaiKey);
   const [provider, setProvider] = useState(settings.provider);
+  const s = t.settingsPanel;
 
   return (
     <div className="absolute inset-0 z-20 flex flex-col bg-white">
       <div className="flex items-center justify-between px-4 py-3 text-white" style={{ background: `linear-gradient(135deg, ${MAROON}, ${MAROON_DARK})`, flexShrink: 0 }}>
-        <div className="flex items-center gap-2 text-[13px] font-semibold"><Settings size={15} /> LLM Provider Settings</div>
+        <div className="flex items-center gap-2 text-[13px] font-semibold"><Settings size={15} /> {s.title}</div>
         <button onClick={onClose} className="text-white/80 hover:text-white"><X size={17} /></button>
       </div>
       <div className="flex flex-col gap-4 px-4 py-4 overflow-y-auto" style={{ background: PAPER, flex: "1 1 auto" }}>
         <p className="text-[11.5px] text-neutral-500 leading-relaxed">
-          Keys entered here are stored only in this browser tab (sessionStorage) and sent directly to this
-          app's own server with each message. They're cleared automatically when you close the tab. Leave a
-          field blank to use the server's configured key, if any.
+          {s.description}
         </p>
 
         <label className="flex flex-col gap-1">
-          <span className="text-[11px] font-semibold text-neutral-600">Anthropic API key</span>
+          <span className="text-[11px] font-semibold text-neutral-600">{s.anthropicLabel}</span>
           <input
             type="password"
             value={anthropicKey}
@@ -239,11 +377,12 @@ function SettingsPanel({ settings, onSave, onClose }) {
             placeholder="sk-ant-..."
             className="rounded-md border border-neutral-200 px-3 py-2 text-[12.5px] outline-none focus:border-neutral-400"
             autoComplete="off"
+            dir="ltr"
           />
         </label>
 
         <label className="flex flex-col gap-1">
-          <span className="text-[11px] font-semibold text-neutral-600">OpenAI API key (gpt-4o-mini)</span>
+          <span className="text-[11px] font-semibold text-neutral-600">{s.openaiLabel}</span>
           <input
             type="password"
             value={openaiKey}
@@ -251,19 +390,20 @@ function SettingsPanel({ settings, onSave, onClose }) {
             placeholder="sk-..."
             className="rounded-md border border-neutral-200 px-3 py-2 text-[12.5px] outline-none focus:border-neutral-400"
             autoComplete="off"
+            dir="ltr"
           />
         </label>
 
         <label className="flex flex-col gap-1">
-          <span className="text-[11px] font-semibold text-neutral-600">Preferred provider</span>
+          <span className="text-[11px] font-semibold text-neutral-600">{s.providerLabel}</span>
           <select
             value={provider}
             onChange={(e) => setProvider(e.target.value)}
             className="rounded-md border border-neutral-200 px-3 py-2 text-[12.5px] outline-none focus:border-neutral-400 bg-white"
           >
-            <option value="auto">Auto (Anthropic first, then gpt-4o-mini)</option>
-            <option value="anthropic">Anthropic (Claude)</option>
-            <option value="openai">OpenAI (gpt-4o-mini)</option>
+            <option value="auto">{s.providerAuto}</option>
+            <option value="anthropic">{s.providerAnthropic}</option>
+            <option value="openai">{s.providerOpenai}</option>
           </select>
         </label>
 
@@ -272,33 +412,39 @@ function SettingsPanel({ settings, onSave, onClose }) {
           className="rounded-md px-3 py-2 text-[12.5px] font-semibold text-white"
           style={{ background: MAROON }}
         >
-          Save settings
+          {s.save}
         </button>
       </div>
     </div>
   );
 }
 
-function buildSystemPrompt(authState) {
+function buildSystemPrompt(authState, language = "en") {
   const authLine = authState.authenticated
     ? `The citizen is currently authenticated via UAE Pass as ${authState.name}. You may look up their case and take action on it.`
     : `The citizen is NOT yet authenticated. You may answer general policy/FAQ questions freely, but you must NOT look up or act on any specific personal case until they are authenticated.`;
+
+  const interfaceLanguage = language === "ar" ? "Arabic" : "English";
 
   return `You are the case-resolution agent for MoCE (Ministry of Community Empowerment), the UAE federal ministry that administers the Social Welfare Program for low-income Emirati families, including the Inflation Allowance (food, fuel, and electricity & water subsidies). Eligibility generally requires total monthly household income below AED 25,000, per Federal Decree-Law No. 23 of 2024.
 
 ${authLine}
 
+LANGUAGE: The citizen's selected interface language is ${interfaceLanguage}. Regardless of that setting, always detect the language of the citizen's MOST RECENT message and reply fully in that same language — if they write in Arabic, reply entirely in clear, natural Modern Standard Arabic; if they write in English, reply in English. If a message is a greeting or otherwise gives no clear language cue, default to the interface language above. Never mix the two languages within one reply. This rule applies ONLY to the natural-language text of your reply — the <use_tool name="...">{...}</use_tool> tag syntax, JSON field names/keys, rule IDs (e.g. MOCE-ELG-45), and case IDs (e.g. SW-${CURRENT_YEAR}-001552) must always stay exactly as specified, in English/ASCII, no matter which language you're replying in.
+
+FORMATTING: This applies to EVERY natural-language reply you write, not just the final case-resolution message — greetings, FAQ answers, and the numbered case list all count. Use light Markdown to make replies easy to scan: **bold** for key terms (rule IDs, amounts, case IDs, dates), "- " for bullet lists, and "1. " "2. " for numbered lists (e.g. when presenting the citizen's cases or a list of steps/documents). Never use headings, code blocks, tables, or literal JSON in a reply — only bold and lists.
+
 You have five actions available. To use one, output EXACTLY one line in this format and then STOP immediately — write nothing else, not even a newline:
 <use_tool name="ACTION_NAME">{...json args...}</use_tool>
 
-Worked example — calling get_case_details for case SW-2024-001552, character for character:
-<use_tool name="get_case_details">{"case_id": "SW-2024-001552"}</use_tool>
+Worked example — calling get_case_details for case SW-${CURRENT_YEAR}-001552, character for character:
+<use_tool name="get_case_details">{"case_id": "SW-${CURRENT_YEAR}-001552"}</use_tool>
 Match that punctuation exactly: a ">" (never ":") immediately after the closing quote of name, then the raw JSON object, then "</use_tool>". Never wrap it as {"name": "...", "arguments": {...}} or any other JSON-call shape — the literal <use_tool name="...">...</use_tool> text is the only format this system understands.
 
 Available actions:
 1. request_login {} — use when the citizen wants you to check, resolve, or act on their own specific case, but they are not yet authenticated.
 2. get_case_details {"case_id": "..."} — fetches full details for ONE specific case. Only call this once you actually have a case ID — never guess one.
-3. list_citizen_cases {} — fallback only: returns the citizen's case IDs/category/status/opened-date, for when they don't know or don't have their case number. Use this to help them find the right one, not as your default first move.
+3. list_citizen_cases {} — returns the citizen's case IDs/category/status/opened-date. This is your default way to find the right case once authenticated — most citizens won't remember a reference number, so prefer this over asking them to recall one.
 4. search_knowledge_base {"query": "short description of the issue"} — safe anytime, for FAQs or case research.
 5. query_enterprise_data {"query": "short description"} — optional, only if broader trend context helps.
 6. submit_decision {"category": "...", "confidence": 0-100, "decision": "auto_response" | "human_review", "rule_cited": "...", "reasoning": "..."} — only for resolving a specific case, never for general FAQs.
@@ -308,11 +454,11 @@ Process:
 - General question about policy, eligibility rules, or how something works: answer directly (optionally using search_knowledge_base first). No authentication, no submit_decision.
 - Citizen clearly wants to check or resolve THEIR OWN specific case, or wants to file/raise a complaint or concern about their own situation (e.g. "check my case", "my fuel allowance was stopped", "I want to file a complaint"), and is not authenticated: you MUST actually call request_login using the exact <use_tool name="request_login">{}</use_tool> format and stop there. Do not call get_case_details or submit_decision first, and do not instead just tell them in plain text that they need to log in — a prose sentence about logging in does not show them the real UAE Pass login button, only the actual tool call does.
 - Do NOT call request_login just because a message mentions allowances, complaints, or cases in general terms — only trigger it once the citizen clearly means their own case/situation, not a hypothetical or general question about how something works. But once you've decided it IS their own case/situation, commit to the real tool call — don't hedge with a text-only "please log in" reply.
-- Once request_login succeeds, you'll be told their name in the tool result. Do not ask them to repeat what they already told you before logging in — that violates the "Ask Once" principle. But a case ID is different information they haven't given you yet, so:
-  - If they haven't given you a case/reference number, your final reply for this turn should be ONLY a brief greeting by name plus a request for their case or reference number (format looks like SW-YYYY-NNNNNN), mentioning briefly what their issue was about if they already said. Do not call any lookup tool yet. Wait for their reply.
-  - If their message already contains something that looks like a case number, skip straight to get_case_details with it.
-- If the citizen provides a case number: call get_case_details with it directly. If it's not found, tell them plainly and offer to look up their cases instead (list_citizen_cases).
-- If the citizen says they don't have their case number, don't know it, or ask you to just look: call list_citizen_cases, then present the short list (case ID, category, status) in your reply and ask which one they mean — do not fetch full details for more than one case without them choosing. Only call get_case_details once they've indicated which case ID.
+- Once request_login succeeds, you'll be told their name in the tool result. Do not ask them to repeat what they already told you before logging in — that violates the "Ask Once" principle. A case ID is different information though, so:
+  - If their message already contains something that looks like a case number (format SW-YYYY-NNNNNN), skip straight to get_case_details with it.
+  - Otherwise, do NOT ask them to type or recall a case/reference number — most citizens won't remember it. Instead call list_citizen_cases right away. Then, in your reply, open with a brief professional greeting by name and a sentence of context before the list — e.g. "Hello {name}, I found {n} cases under your profile:" — then the numbered list (e.g. "1. SW-${CURRENT_YEAR}-004821 — Fuel Allowance · Suspended"), then ask which one they'd like to proceed with (mentioning briefly what their issue was about if they already said). Never dump the numbered list with no greeting or lead-in — always frame it professionally. Do not call get_case_details yet. Wait for their reply.
+- If the citizen provides a case number directly at any point: call get_case_details with it. If it's not found, tell them plainly and offer to list their cases instead (list_citizen_cases).
+- After presenting a numbered list of cases, wait for them to choose — do not fetch full details for more than one case without them choosing. They may reply with the number, the case ID, or a description of the issue; match it to the right case_id, then call get_case_details for that one case.
 - Once you have the specific case's full details: call search_knowledge_base, optionally query_enterprise_data, then call submit_decision exactly once (confidence >= 80 -> auto_response, otherwise human_review). Only after submit_decision has run, write a short plain-language reply: explain what happened, cite the rule in plain terms, and give next steps. If human_review, say it's been sent to an officer and note the real Complaints Service SLA of 5 working days. Keep it under 120 words. Never mention tools, MCP, or system internals. You may use **bold** for key terms (like rule IDs or amounts) and "- " bullet points for lists of steps or documents, but never JSON or tags.
 
 Today's date is ${new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" })}. Use this to reason about elapsed time accurately — e.g. whether a complaint's SLA window has already passed. Trust the dates/status in tool results as already accurate; don't assume a "pending" status is stale just because a case was opened a while ago.
@@ -383,17 +529,15 @@ function FormattedText({ text }) {
   );
 }
 
-function getFollowUps(turn) {
+function getFollowUps(turn, t) {
   const resolved = turn.steps.some((s) => s.type === "decision");
-  return resolved
-    ? ["Can I appeal this decision?", "What documents do I need?", "How long will the review take?"]
-    : ["Can you check my own case?", "What's the appeal window for this rule?"];
+  return resolved ? t.followUpsResolved : t.followUpsUnresolved;
 }
 
-function FollowUpChips({ turn, onPick }) {
+function FollowUpChips({ turn, onPick, t }) {
   return (
     <div className="flex flex-wrap gap-1.5 mt-1">
-      {getFollowUps(turn).map((q) => (
+      {getFollowUps(turn, t).map((q) => (
         <button
           key={q}
           onClick={() => onPick(q)}
@@ -406,15 +550,15 @@ function FollowUpChips({ turn, onPick }) {
   );
 }
 
-function LoginCard({ onLogin }) {
+function LoginCard({ onLogin, t }) {
   return (
     <div className="rounded-md border px-4 py-3 flex items-center justify-between gap-3 flex-wrap" style={{ background: "#FBF3E7", borderColor: "#EAD9AF" }}>
       <div className="flex items-center gap-2 text-[12.5px] font-medium" style={{ color: "#8A6A17" }}>
         <ShieldCheck size={15} />
-        Verify your identity to continue
+        {t.loginPrompt}
       </div>
       <button onClick={onLogin} className="rounded-md px-3 py-1.5 text-[11.5px] font-semibold text-white" style={{ background: MAROON }}>
-        Continue with UAE Pass
+        {t.loginButton}
       </button>
     </div>
   );
@@ -457,19 +601,19 @@ function ToolCard({ icon: Icon, label, tone, children }) {
   );
 }
 
-function ConfidenceCard({ confidence, ruleCited }) {
+function ConfidenceCard({ confidence, ruleCited, t }) {
   const isHigh = confidence >= 80;
   const barColor = isHigh ? MAROON : confidence >= 60 ? GOLD : "#B85450";
   return (
     <div className="rounded-md border border-neutral-200 bg-white px-4 py-3">
       <div className="flex items-center gap-2 mb-1.5">
         <Gauge size={13} className="text-neutral-400" />
-        <span className="text-[9.5px] font-semibold tracking-wide uppercase text-neutral-400">Confidence Evaluation</span>
+        <span className="text-[9.5px] font-semibold tracking-wide uppercase text-neutral-400">{t.confidenceEval}</span>
       </div>
       <div className="flex items-end gap-2 mb-1.5">
         <div className="text-2xl font-bold" style={{ color: barColor }}>{Math.round(confidence)}<span className="text-sm align-top">%</span></div>
         <span className="mb-1 rounded px-1.5 py-0.5 text-[9px] font-bold text-white" style={{ background: barColor }}>
-          {isHigh ? "HIGH" : confidence >= 60 ? "MEDIUM" : "LOW"}
+          {isHigh ? t.high : confidence >= 60 ? t.medium : t.low}
         </span>
       </div>
       <div className="h-1 rounded-full bg-neutral-100 overflow-hidden mb-2">
@@ -477,40 +621,40 @@ function ConfidenceCard({ confidence, ruleCited }) {
       </div>
       <div className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-medium" style={{ background: isHigh ? "#F6EDF0" : "#FBF3E7", color: isHigh ? MAROON : "#8A6A17" }}>
         {isHigh ? <CheckCircle2 size={12} /> : <UserCheck size={12} />}
-        {isHigh ? "Auto-response" : "Routed to human review"}
-        {ruleCited ? <span className="text-neutral-400 font-normal">· cites {ruleCited}</span> : null}
+        {isHigh ? t.autoResponse : t.humanReview}
+        {ruleCited ? <span className="text-neutral-400 font-normal">{t.citesRule(ruleCited)}</span> : null}
       </div>
     </div>
   );
 }
 
-function FeedbackRow({ onFeedback, given }) {
+function FeedbackRow({ onFeedback, given, t }) {
   if (given) {
-    return <div className="flex items-center gap-1.5 text-[11px] mt-1.5" style={{ color: MAROON }}><RefreshCw size={11} />Added to evaluation dataset.</div>;
+    return <div className="flex items-center gap-1.5 text-[11px] mt-1.5" style={{ color: MAROON }}><RefreshCw size={11} />{t.feedbackRecorded}</div>;
   }
   return (
     <div className="flex items-center gap-1.5 mt-1.5">
-      <button onClick={() => onFeedback(true)} className="flex items-center gap-1 rounded-md border border-neutral-200 px-2 py-0.5 text-[10.5px] text-neutral-500 hover:border-neutral-300"><ThumbsUp size={11} /> Helpful</button>
-      <button onClick={() => onFeedback(false)} className="flex items-center gap-1 rounded-md border border-neutral-200 px-2 py-0.5 text-[10.5px] text-neutral-500 hover:border-neutral-300"><ThumbsDown size={11} /> Not helpful</button>
+      <button onClick={() => onFeedback(true)} className="flex items-center gap-1 rounded-md border border-neutral-200 px-2 py-0.5 text-[10.5px] text-neutral-500 hover:border-neutral-300"><ThumbsUp size={11} /> {t.feedbackHelpful}</button>
+      <button onClick={() => onFeedback(false)} className="flex items-center gap-1 rounded-md border border-neutral-200 px-2 py-0.5 text-[10.5px] text-neutral-500 hover:border-neutral-300"><ThumbsDown size={11} /> {t.feedbackNotHelpful}</button>
     </div>
   );
 }
 
-function ProcessTrace({ turn, onToggle }) {
+function ProcessTrace({ turn, onToggle, t }) {
   const stepCount = turn.steps.length;
-  const isCaseFlow = turn.steps.some((s) => s.label === "Operational Retrieval" || s.label === "Case Directory" || s.type === "decision");
+  const isCaseFlow = turn.steps.some((s) => s.label === t.toolLabels.operationalRetrieval || s.label === t.toolLabels.caseDirectory || s.type === "decision");
   if (stepCount === 0 && turn.loading) {
-    return <div className="flex items-center gap-1.5 text-neutral-400 text-[11.5px] px-1 py-1"><Loader2 size={12} className="animate-spin" /> Thinking…</div>;
+    return <div className="flex items-center gap-1.5 text-neutral-400 text-[11.5px] px-1 py-1"><Loader2 size={12} className="animate-spin" /> {t.thinking}</div>;
   }
   if (stepCount === 0) return null;
   const expanded = turn.loading || turn.expanded;
-  const verb = isCaseFlow ? "Working through the case" : "Looking into that";
-  const verbDone = isCaseFlow ? "Worked through the case" : "Looked into that";
+  const verb = isCaseFlow ? t.workingCase : t.lookingInto;
+  const verbDone = isCaseFlow ? t.workedCase : t.lookedInto;
   return (
     <div>
       <button onClick={() => !turn.loading && onToggle(turn.id)} className="flex items-center gap-1.5 text-[11px] text-neutral-500 hover:text-neutral-700 py-0.5">
         {turn.loading ? <Loader2 size={12} className="animate-spin text-neutral-400" /> : <CheckCircle2 size={12} style={{ color: MAROON }} />}
-        <span>{turn.loading ? `${verb}…` : `${verbDone} · ${stepCount} step${stepCount > 1 ? "s" : ""}`}</span>
+        <span>{turn.loading ? `${verb}…` : `${verbDone} · ${t.stepLabel(stepCount)}`}</span>
         {!turn.loading && (expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />)}
       </button>
       {expanded && (
@@ -521,7 +665,7 @@ function ProcessTrace({ turn, onToggle }) {
                 const Icon = step.icon;
                 return <ToolCard key={i} icon={Icon} label={step.label} tone={step.tone}>{step.content}</ToolCard>;
               }
-              if (step.type === "decision") return <ConfidenceCard key={i} confidence={step.confidence} ruleCited={step.ruleCited} />;
+              if (step.type === "decision") return <ConfidenceCard key={i} confidence={step.confidence} ruleCited={step.ruleCited} t={t} />;
               return null;
             })}
           </div>
@@ -546,6 +690,9 @@ function ChatWidget({ onClose }) {
   const scrollRef = useRef(null);
   const pendingHistoryRef = useRef({});
 
+  const language = llmSettings.language === "ar" ? "ar" : "en";
+  const t = TRANSLATIONS[language];
+
   useEffect(() => {
     setLlmSettings(loadLlmSettings());
   }, []);
@@ -554,6 +701,12 @@ function ChatWidget({ onClose }) {
     setLlmSettings(next);
     saveLlmSettings(next);
     setSettingsOpen(false);
+  }
+
+  function handleToggleLanguage() {
+    const next = { ...llmSettings, language: language === "ar" ? "en" : "ar" };
+    setLlmSettings(next);
+    saveLlmSettings(next);
   }
 
   useEffect(() => {
@@ -572,18 +725,18 @@ function ChatWidget({ onClose }) {
       const result = mockGetCaseDetails(toolInput.case_id);
       if (result.error) {
         addStep(turnId, {
-          type: "tool", tone: "maroon", icon: Database, label: "Operational Retrieval",
+          type: "tool", tone: "maroon", icon: Database, label: t.toolLabels.operationalRetrieval,
           content: (
             <>
               <SystemChain steps={["MCP", "webMethods", "Dynamics"]} />
-              <span className="text-red-500">{result.message}</span>
+              <span className="text-red-500">{t.notFound(toolInput.case_id)}</span>
             </>
           ),
         });
         return result;
       }
       addStep(turnId, {
-        type: "tool", tone: "maroon", icon: Database, label: "Operational Retrieval",
+        type: "tool", tone: "maroon", icon: Database, label: t.toolLabels.operationalRetrieval,
         content: (
           <>
             <SystemChain steps={["MCP", "webMethods", "Dynamics"]} />
@@ -596,7 +749,7 @@ function ChatWidget({ onClose }) {
     if (name === "list_citizen_cases") {
       const result = mockListCases();
       addStep(turnId, {
-        type: "tool", tone: "maroon", icon: ClipboardList, label: "Case Directory",
+        type: "tool", tone: "maroon", icon: ClipboardList, label: t.toolLabels.caseDirectory,
         content: (
           <>
             <SystemChain steps={["MCP", "webMethods", "Dynamics"]} />
@@ -613,7 +766,7 @@ function ChatWidget({ onClose }) {
     if (name === "search_knowledge_base") {
       const result = mockSearchKnowledge(toolInput.query);
       addStep(turnId, {
-        type: "tool", tone: "maroon", icon: Search, label: "Knowledge Retrieval",
+        type: "tool", tone: "maroon", icon: Search, label: t.toolLabels.knowledgeRetrieval,
         content: (
           <>
             <SystemChain steps={["GraphRAG", "Vector + Graph"]} />
@@ -626,7 +779,7 @@ function ChatWidget({ onClose }) {
     if (name === "query_enterprise_data") {
       const result = mockEnterpriseData();
       addStep(turnId, {
-        type: "tool", tone: "maroon", icon: ClipboardList, label: "Enterprise Data",
+        type: "tool", tone: "maroon", icon: ClipboardList, label: t.toolLabels.enterpriseData,
         content: (
           <>
             <SystemChain steps={["MCP", "webMethods", "EDW / SQL Server"]} />
@@ -637,7 +790,7 @@ function ChatWidget({ onClose }) {
       return result;
     }
     if (name === "submit_decision") {
-      addStep(turnId, { type: "tool", tone: "gold", icon: Brain, label: "AI Inferencing", content: <>Reasoning complete — routing case.</> });
+      addStep(turnId, { type: "tool", tone: "gold", icon: Brain, label: t.toolLabels.aiInferencing, content: <>{t.reasoningComplete}</> });
       addStep(turnId, { type: "decision", confidence: toolInput.confidence, ruleCited: toolInput.rule_cited });
       return { ok: true, recorded: true };
     }
@@ -661,7 +814,7 @@ function ChatWidget({ onClose }) {
       body: JSON.stringify({
         model: MODEL,
         max_tokens: 1000,
-        system: buildSystemPrompt(authState),
+        system: buildSystemPrompt(authState, language),
         stop_sequences: ["</use_tool>"],
         messages,
         provider: llmSettings.provider || "auto",
@@ -695,7 +848,7 @@ function ChatWidget({ onClose }) {
         const call = data.stop_reason === "stop_sequence" ? extractToolCall(text) : null;
 
         if (call && call.parseError) {
-          updateTurn(turnId, { error: "Something went wrong. Please try again.", loading: false, expanded: false });
+          updateTurn(turnId, { error: t.errorGeneric, loading: false, expanded: false });
           setConvo(history);
           return;
         }
@@ -705,6 +858,20 @@ function ChatWidget({ onClose }) {
           updateTurn(turnId, { pendingLogin: true, loginPreface: call.preface, loading: false, expanded: false });
           setConvo(closedHistory);
           return;
+        }
+        if (call && PROTECTED_TOOLS.includes(call.name) && !authState.authenticated) {
+          // Hard gate: never run a case-lookup/decision tool while
+          // unauthenticated, no matter what the model tried to do. Bounce it
+          // back through request_login instead of executing the tool.
+          history = [...history, { role: "assistant", content: text + "</use_tool>" }];
+          history = [...history, {
+            role: "user",
+            content: `<tool_result name="${call.name}">${JSON.stringify({
+              error: "not_authenticated",
+              message: "The citizen is not authenticated. You must call request_login before accessing or acting on any case-specific data.",
+            })}</tool_result>`,
+          }];
+          continue;
         }
         if (call) {
           const result = runTool(turnId, call.name, call.args);
@@ -717,10 +884,10 @@ function ChatWidget({ onClose }) {
         setConvo(history);
         return;
       }
-      updateTurn(turnId, { error: "Took too many steps. Please try again.", loading: false, expanded: false });
+      updateTurn(turnId, { error: t.errorTooManySteps, loading: false, expanded: false });
       setConvo(history);
     } catch (err) {
-      updateTurn(turnId, { error: err.message || "Couldn't reach the agent. Please try again.", loading: false, expanded: false });
+      updateTurn(turnId, { error: err.message || t.errorFallback, loading: false, expanded: false });
     }
   }
 
@@ -765,11 +932,10 @@ function ChatWidget({ onClose }) {
     pendingHistoryRef.current = {};
   }
 
-  const examples = ["What's the income threshold for the Inflation Allowance?", "My Fuel Allowance was stopped incorrectly."];
   const isBusy = turns.some((t) => t.loading || t.pendingLogin);
 
   return (
-    <div className="relative flex flex-col bg-white" style={{ height: "100%" }}>
+    <div className="relative flex flex-col bg-white" style={{ height: "100%" }} dir={t.dir} lang={language}>
       {/* Widget header */}
       <div className="flex items-center justify-between px-4 py-3 text-white" style={{ background: `linear-gradient(135deg, ${MAROON}, ${MAROON_DARK})`, flexShrink: 0 }}>
         <div className="flex items-center gap-2.5">
@@ -777,24 +943,32 @@ function ChatWidget({ onClose }) {
             <MessageCircle size={16} />
           </div>
           <div>
-            <div className="text-[13px] font-semibold leading-tight">MoCE Assistant</div>
+            <div className="text-[13px] font-semibold leading-tight">{t.headerTitle}</div>
             <div className="text-[10.5px] text-white/70 leading-tight">
-              {authenticated ? `${citizenName} · Verified` : "Ask about Social Welfare"}
+              {authenticated ? t.headerSubtitleAuth(citizenName) : t.headerSubtitleGuest}
             </div>
           </div>
         </div>
         <div className="flex items-center gap-3">
           {authenticated && !isBusy && (
-            <button onClick={handleSignOut} className="text-[10.5px] text-white/70 hover:text-white underline underline-offset-2">Sign out</button>
+            <button onClick={handleSignOut} className="text-[10.5px] text-white/70 hover:text-white underline underline-offset-2">{t.signOut}</button>
           )}
-          <button onClick={handleResetConversation} disabled={isBusy} title="Start a new conversation" className="text-white/80 hover:text-white disabled:opacity-40"><RefreshCw size={15} /></button>
-          <button onClick={() => setSettingsOpen(true)} title="LLM provider settings" className="text-white/80 hover:text-white"><Settings size={16} /></button>
+          <button
+            onClick={handleToggleLanguage}
+            title={t.languageToggleTitle}
+            className="flex items-center gap-1 rounded-md border border-white/25 px-1.5 py-0.5 text-[10.5px] font-semibold text-white/90 hover:text-white hover:border-white/50"
+          >
+            <Globe size={13} />
+            {language === "ar" ? "EN" : "عربي"}
+          </button>
+          <button onClick={handleResetConversation} disabled={isBusy} title={t.newConversationTitle} className="text-white/80 hover:text-white disabled:opacity-40"><RefreshCw size={15} /></button>
+          <button onClick={() => setSettingsOpen(true)} title={t.settingsTitle} className="text-white/80 hover:text-white"><Settings size={16} /></button>
           <button onClick={onClose} className="text-white/80 hover:text-white"><X size={17} /></button>
         </div>
       </div>
 
       {settingsOpen && (
-        <SettingsPanel settings={llmSettings} onSave={handleSaveSettings} onClose={() => setSettingsOpen(false)} />
+        <SettingsPanel settings={llmSettings} onSave={handleSaveSettings} onClose={() => setSettingsOpen(false)} t={t} />
       )}
 
       {/* Chat body */}
@@ -803,10 +977,10 @@ function ChatWidget({ onClose }) {
           {turns.length === 0 && (
             <div className="text-center text-neutral-400 text-[12px] mt-8 px-2">
               <MessageSquare size={20} className="mx-auto mb-2 text-neutral-300" />
-              Ask about the Social Welfare Program, or check your own case.
+              {t.emptyStateText}
               <div className="flex flex-col gap-1.5 mt-3">
-                {examples.map((ex) => (
-                  <button key={ex} onClick={() => handleSend(ex)} className="rounded-md border border-neutral-200 bg-white px-2.5 py-1.5 text-[11.5px] text-neutral-600 hover:border-neutral-300 text-left">
+                {t.examples.map((ex) => (
+                  <button key={ex} onClick={() => handleSend(ex)} className={`rounded-md border border-neutral-200 bg-white px-2.5 py-1.5 text-[11.5px] text-neutral-600 hover:border-neutral-300 ${language === "ar" ? "text-right" : "text-left"}`}>
                     {ex}
                   </button>
                 ))}
@@ -819,39 +993,39 @@ function ChatWidget({ onClose }) {
               return (
                 <div key={turn.id} className="flex items-center gap-2 my-0.5">
                   <div className="flex-1 border-t border-dashed border-neutral-200" />
-                  <span className="text-[9.5px] font-medium tracking-wide uppercase text-neutral-400">Signed out</span>
+                  <span className="text-[9.5px] font-medium tracking-wide uppercase text-neutral-400">{t.signedOutDivider}</span>
                   <div className="flex-1 border-t border-dashed border-neutral-200" />
                 </div>
               );
             }
             return (
               <div key={turn.id} className="flex flex-col gap-1.5">
-                <div className="self-end max-w-[85%] rounded-lg text-white px-3 py-2 text-[12.5px]" style={{ background: INK }}>
+                <div className="self-end max-w-[85%] rounded-lg text-white px-3 py-2 text-[12.5px]" style={{ background: INK }} dir="auto">
                   {turn.userText}
                 </div>
 
-                <ProcessTrace turn={turn} onToggle={toggleExpand} />
+                <ProcessTrace turn={turn} onToggle={toggleExpand} t={t} />
 
                 {turn.pendingLogin && (
                   <div className="flex flex-col gap-1.5">
                     {turn.loginPreface && (
-                      <div className="rounded-lg bg-white border border-neutral-200 px-3 py-2 text-[12.5px] text-neutral-800 leading-relaxed">{turn.loginPreface}</div>
+                      <div className="rounded-lg bg-white border border-neutral-200 px-3 py-2 text-[12.5px] text-neutral-800 leading-relaxed" dir="auto">{turn.loginPreface}</div>
                     )}
-                    <LoginCard onLogin={() => handleLoginClick(turn.id)} />
+                    <LoginCard onLogin={() => handleLoginClick(turn.id)} t={t} />
                   </div>
                 )}
 
                 {turn.assistantText && (
                   <div>
-                    <div className="rounded-lg bg-white border border-neutral-200 px-3 py-2 text-[12.5px] text-neutral-800 leading-relaxed">
+                    <div className="rounded-lg bg-white border border-neutral-200 px-3 py-2 text-[12.5px] text-neutral-800 leading-relaxed" dir="auto">
                       <FormattedText text={turn.assistantText} />
                     </div>
-                    <FeedbackRow given={turn.feedbackGiven} onFeedback={() => handleFeedback(turn.id)} />
+                    <FeedbackRow given={turn.feedbackGiven} onFeedback={() => handleFeedback(turn.id)} t={t} />
                   </div>
                 )}
 
                 {turn.assistantText && i === turns.length - 1 && !isBusy && (
-                  <FollowUpChips turn={turn} onPick={handleSend} />
+                  <FollowUpChips turn={turn} onPick={handleSend} t={t} />
                 )}
 
                 {turn.error && (
@@ -870,7 +1044,8 @@ function ChatWidget({ onClose }) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSend()}
-            placeholder="Type your question…"
+            placeholder={t.inputPlaceholder}
+            dir="auto"
             className="flex-1 rounded-md border border-neutral-200 px-3 py-2 text-[12.5px] outline-none focus:border-neutral-400"
           />
           <button
