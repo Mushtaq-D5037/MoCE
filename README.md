@@ -10,10 +10,22 @@ human-review routing, and a feedback loop.
 
 - `app/page.js` renders the widget component.
 - `components/MoCEWebsiteWidget.jsx` is the whole app: homepage + widget.
-  It calls **`/api/chat`**, never Anthropic directly.
-- `app/api/chat/route.js` is a small server-side proxy: it reads
-  `ANTHROPIC_API_KEY` from the server environment and forwards requests to
-  Anthropic's Messages API. This keeps your API key off the client entirely.
+  It calls **`/api/chat`**, never a provider's API directly.
+- `app/api/chat/route.js` is a small server-side proxy in front of two
+  possible providers: **Anthropic (Claude)** and **OpenAI (gpt-4o-mini)**.
+  It reads `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` from the server
+  environment and forwards requests to whichever provider resolves.
+  Anthropic is used by default if both are configured; gpt-4o-mini is the
+  fallback if only `OPENAI_API_KEY` is set. If neither is configured, the
+  route returns a clear "configure an API key" error instead of a silent
+  failure.
+- The gear icon in the widget header opens a settings panel where a user
+  can paste their own Anthropic and/or OpenAI keys, and optionally pin a
+  preferred provider instead of the automatic fallback. Those keys are
+  held only in the browser's `sessionStorage` (cleared when the tab
+  closes) and sent per-request as headers to `/api/chat` — they're never
+  written to server-side storage or logs, and take priority over the
+  server's env vars only for that request.
 
 The chat agent uses a **stop-sequence tool protocol** rather than the
 structured `tools` API parameter — the model emits `<use_tool name="...">`
