@@ -6,7 +6,7 @@ import {
   ThumbsUp, ThumbsDown, RefreshCw, CheckCircle2, ClipboardList,
   Sparkles, UserCheck, MessageSquare, ChevronRight, ChevronDown,
   MessageCircle, X, Menu, Globe, Phone, Mail, Facebook, Instagram,
-  Youtube, Twitter, ArrowRight, Minus, Mic,
+  Youtube, Twitter, ArrowRight, Minus, Mic, Settings,
 } from "lucide-react";
 
 /* ---------------------------------------------------------------------- */
@@ -186,6 +186,99 @@ function mockEnterpriseData() {
 const MODEL = "claude-sonnet-5"; // real public API model — verify current model IDs at https://docs.claude.com if this changes
 const MOCK_CITIZEN_NAME = "Ahmed Al Mansoori";
 
+/* ---------------------------------------------------------------------- */
+/* LLM provider settings — user-supplied API keys, held only in           */
+/* sessionStorage (cleared when the tab closes) and sent per-request to    */
+/* our own /api/chat route, never to Anthropic/OpenAI directly from here.  */
+/* Server env vars (ANTHROPIC_API_KEY / OPENAI_API_KEY) are always the     */
+/* fallback if a field here is left blank.                                 */
+/* ---------------------------------------------------------------------- */
+
+const SETTINGS_STORAGE_KEY = "moce_llm_settings";
+const DEFAULT_LLM_SETTINGS = { anthropicKey: "", openaiKey: "", provider: "auto" };
+
+function loadLlmSettings() {
+  if (typeof window === "undefined") return DEFAULT_LLM_SETTINGS;
+  try {
+    const raw = window.sessionStorage.getItem(SETTINGS_STORAGE_KEY);
+    return raw ? { ...DEFAULT_LLM_SETTINGS, ...JSON.parse(raw) } : DEFAULT_LLM_SETTINGS;
+  } catch {
+    return DEFAULT_LLM_SETTINGS;
+  }
+}
+
+function saveLlmSettings(settings) {
+  if (typeof window === "undefined") return;
+  window.sessionStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+}
+
+function SettingsPanel({ settings, onSave, onClose }) {
+  const [anthropicKey, setAnthropicKey] = useState(settings.anthropicKey);
+  const [openaiKey, setOpenaiKey] = useState(settings.openaiKey);
+  const [provider, setProvider] = useState(settings.provider);
+
+  return (
+    <div className="absolute inset-0 z-20 flex flex-col bg-white">
+      <div className="flex items-center justify-between px-4 py-3 text-white" style={{ background: `linear-gradient(135deg, ${MAROON}, ${MAROON_DARK})`, flexShrink: 0 }}>
+        <div className="flex items-center gap-2 text-[13px] font-semibold"><Settings size={15} /> LLM Provider Settings</div>
+        <button onClick={onClose} className="text-white/80 hover:text-white"><X size={17} /></button>
+      </div>
+      <div className="flex flex-col gap-4 px-4 py-4 overflow-y-auto" style={{ background: PAPER, flex: "1 1 auto" }}>
+        <p className="text-[11.5px] text-neutral-500 leading-relaxed">
+          Keys entered here are stored only in this browser tab (sessionStorage) and sent directly to this
+          app's own server with each message. They're cleared automatically when you close the tab. Leave a
+          field blank to use the server's configured key, if any.
+        </p>
+
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] font-semibold text-neutral-600">Anthropic API key</span>
+          <input
+            type="password"
+            value={anthropicKey}
+            onChange={(e) => setAnthropicKey(e.target.value)}
+            placeholder="sk-ant-..."
+            className="rounded-md border border-neutral-200 px-3 py-2 text-[12.5px] outline-none focus:border-neutral-400"
+            autoComplete="off"
+          />
+        </label>
+
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] font-semibold text-neutral-600">OpenAI API key (gpt-4o-mini)</span>
+          <input
+            type="password"
+            value={openaiKey}
+            onChange={(e) => setOpenaiKey(e.target.value)}
+            placeholder="sk-..."
+            className="rounded-md border border-neutral-200 px-3 py-2 text-[12.5px] outline-none focus:border-neutral-400"
+            autoComplete="off"
+          />
+        </label>
+
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] font-semibold text-neutral-600">Preferred provider</span>
+          <select
+            value={provider}
+            onChange={(e) => setProvider(e.target.value)}
+            className="rounded-md border border-neutral-200 px-3 py-2 text-[12.5px] outline-none focus:border-neutral-400 bg-white"
+          >
+            <option value="auto">Auto (Anthropic first, then gpt-4o-mini)</option>
+            <option value="anthropic">Anthropic (Claude)</option>
+            <option value="openai">OpenAI (gpt-4o-mini)</option>
+          </select>
+        </label>
+
+        <button
+          onClick={() => onSave({ anthropicKey, openaiKey, provider })}
+          className="rounded-md px-3 py-2 text-[12.5px] font-semibold text-white"
+          style={{ background: MAROON }}
+        >
+          Save settings
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function buildSystemPrompt(authState) {
   const authLine = authState.authenticated
     ? `The citizen is currently authenticated via UAE Pass as ${authState.name}. You may look up their case and take action on it.`
@@ -198,6 +291,10 @@ ${authLine}
 You have five actions available. To use one, output EXACTLY one line in this format and then STOP immediately — write nothing else, not even a newline:
 <use_tool name="ACTION_NAME">{...json args...}</use_tool>
 
+Worked example — calling get_case_details for case SW-2024-001552, character for character:
+<use_tool name="get_case_details">{"case_id": "SW-2024-001552"}</use_tool>
+Match that punctuation exactly: a ">" (never ":") immediately after the closing quote of name, then the raw JSON object, then "</use_tool>". Never wrap it as {"name": "...", "arguments": {...}} or any other JSON-call shape — the literal <use_tool name="...">...</use_tool> text is the only format this system understands.
+
 Available actions:
 1. request_login {} — use when the citizen wants you to check, resolve, or act on their own specific case, but they are not yet authenticated.
 2. get_case_details {"case_id": "..."} — fetches full details for ONE specific case. Only call this once you actually have a case ID — never guess one.
@@ -207,8 +304,10 @@ Available actions:
 6. submit_decision {"category": "...", "confidence": 0-100, "decision": "auto_response" | "human_review", "rule_cited": "...", "reasoning": "..."} — only for resolving a specific case, never for general FAQs.
 
 Process:
+- Greeting or vague/small-talk message with no specific request yet (e.g. "hi", "hello", "can you help me?"): reply with a brief, friendly welcome explaining you can answer questions about the Social Welfare Program / Inflation Allowance, or help check/resolve their own case or complaint if they have one. Do NOT call request_login or any tool for this — wait until they actually state what they need.
 - General question about policy, eligibility rules, or how something works: answer directly (optionally using search_knowledge_base first). No authentication, no submit_decision.
-- Citizen wants their OWN case checked or resolved and is not authenticated: call request_login and stop. Do not call get_case_details or submit_decision first.
+- Citizen clearly wants to check or resolve THEIR OWN specific case, or wants to file/raise a complaint or concern about their own situation (e.g. "check my case", "my fuel allowance was stopped", "I want to file a complaint"), and is not authenticated: you MUST actually call request_login using the exact <use_tool name="request_login">{}</use_tool> format and stop there. Do not call get_case_details or submit_decision first, and do not instead just tell them in plain text that they need to log in — a prose sentence about logging in does not show them the real UAE Pass login button, only the actual tool call does.
+- Do NOT call request_login just because a message mentions allowances, complaints, or cases in general terms — only trigger it once the citizen clearly means their own case/situation, not a hypothetical or general question about how something works. But once you've decided it IS their own case/situation, commit to the real tool call — don't hedge with a text-only "please log in" reply.
 - Once request_login succeeds, you'll be told their name in the tool result. Do not ask them to repeat what they already told you before logging in — that violates the "Ask Once" principle. But a case ID is different information they haven't given you yet, so:
   - If they haven't given you a case/reference number, your final reply for this turn should be ONLY a brief greeting by name plus a request for their case or reference number (format looks like SW-YYYY-NNNNNN), mentioning briefly what their issue was about if they already said. Do not call any lookup tool yet. Wait for their reply.
   - If their message already contains something that looks like a case number, skip straight to get_case_details with it.
@@ -225,6 +324,8 @@ Real service SLAs to cite accurately when relevant (never invent different numbe
 - Contesting any decision (income figure, household status, meter reading) happens by filing a Complaint — there is no separate fixed "appeal window" beyond that 5-day SLA, so don't invent one.
 
 CRITICAL RULES:
+- Never call request_login in response to a greeting, small talk, or a general policy/FAQ question — only when the citizen clearly means their own case, application, allowance, or complaint.
+- Whenever login is genuinely needed, you must emit the real <use_tool name="request_login">{}</use_tool> call — never say "please log in" (or similar) as plain text instead of calling the tool, since only the actual tool call renders a working login button for the citizen.
 - After writing a <use_tool> tag you MUST stop. Never write a <tool_result> yourself, never guess or invent what a tool would return, never continue the sentence after the tag.
 - Only real results provided back to you (in a following message starting with <tool_result>) are true. Anything you might imagine before that does not exist.
 - Do not narrate tool calls in prose ("Let me check...") followed by a fake result — either make a real <use_tool> call and stop, or write the final reply. Never both fake and real content in the same message.`;
@@ -440,8 +541,20 @@ function ChatWidget({ onClose }) {
   const [input, setInput] = useState("");
   const [authenticated, setAuthenticated] = useState(false);
   const [citizenName, setCitizenName] = useState(null);
+  const [llmSettings, setLlmSettings] = useState(DEFAULT_LLM_SETTINGS);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const scrollRef = useRef(null);
   const pendingHistoryRef = useRef({});
+
+  useEffect(() => {
+    setLlmSettings(loadLlmSettings());
+  }, []);
+
+  function handleSaveSettings(next) {
+    setLlmSettings(next);
+    saveLlmSettings(next);
+    setSettingsOpen(false);
+  }
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -531,25 +644,44 @@ function ChatWidget({ onClose }) {
     return { ok: false, error: "unknown tool" };
   }
 
-  async function callClaude(messages, authState) {
-    // Calls our own Next.js API route (app/api/chat/route.js), which holds the
-    // real Anthropic API key server-side and forwards the request. Never call
-    // api.anthropic.com directly from client-side code — that would require
-    // exposing your API key in the browser.
+  async function callLLM(messages, authState) {
+    // Calls our own Next.js API route (app/api/chat/route.js), which resolves
+    // Anthropic vs. OpenAI (gpt-4o-mini) server-side and forwards the request.
+    // Never call api.anthropic.com / api.openai.com directly from client-side
+    // code — that would require exposing an API key in the browser. Optional
+    // user-supplied keys from the settings gear icon ride along as headers;
+    // the server falls back to its own env vars for whichever is blank.
     const res = await fetch("/api/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: MODEL, max_tokens: 1000, system: buildSystemPrompt(authState), stop_sequences: ["</use_tool>"], messages }),
+      headers: {
+        "Content-Type": "application/json",
+        ...(llmSettings.anthropicKey ? { "x-anthropic-key": llmSettings.anthropicKey } : {}),
+        ...(llmSettings.openaiKey ? { "x-openai-key": llmSettings.openaiKey } : {}),
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 1000,
+        system: buildSystemPrompt(authState),
+        stop_sequences: ["</use_tool>"],
+        messages,
+        provider: llmSettings.provider || "auto",
+      }),
     });
-    if (!res.ok) throw new Error("API error " + res.status);
-    return res.json();
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((data && data.error) || `API error ${res.status}`);
+    return data;
   }
 
   function extractToolCall(text) {
-    const m = text.match(/<use_tool\s+name="([^"]+)">([\s\S]*)$/);
+    // Anthropic reliably emits name="X">{...}, but cheaper/smaller models
+    // (e.g. gpt-4o-mini) sometimes drift — e.g. name="X":{...} with no
+    // closing tag. Tolerate an optional ":" or ">" (or neither) between the
+    // name attribute and the JSON args, and strip a trailing </use_tool> if
+    // the model included it instead of being cut off by the stop sequence.
+    const m = text.match(/<use_tool\s+name="([^"]+)"\s*[:>]?\s*([\s\S]*)$/);
     if (!m) return null;
     const name = m[1];
-    const jsonStr = m[2].trim();
+    const jsonStr = m[2].trim().replace(/<\/use_tool>\s*$/, "").trim();
     try { return { name, args: JSON.parse(jsonStr), preface: text.slice(0, m.index).trim() }; }
     catch { return { name, args: {}, preface: text.slice(0, m.index).trim(), parseError: true }; }
   }
@@ -558,7 +690,7 @@ function ChatWidget({ onClose }) {
     let history = startHistory;
     try {
       for (let i = 0; i < 8; i++) {
-        const data = await callClaude(history, authState);
+        const data = await callLLM(history, authState);
         const text = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
         const call = data.stop_reason === "stop_sequence" ? extractToolCall(text) : null;
 
@@ -588,7 +720,7 @@ function ChatWidget({ onClose }) {
       updateTurn(turnId, { error: "Took too many steps. Please try again.", loading: false, expanded: false });
       setConvo(history);
     } catch (err) {
-      updateTurn(turnId, { error: "Couldn't reach the agent. Please try again.", loading: false, expanded: false });
+      updateTurn(turnId, { error: err.message || "Couldn't reach the agent. Please try again.", loading: false, expanded: false });
     }
   }
 
@@ -625,12 +757,19 @@ function ChatWidget({ onClose }) {
     setConvo([]);
     setTurns((prev) => [...prev, { id: "divider-" + Date.now(), type: "divider" }]);
   }
+  function handleResetConversation() {
+    setAuthenticated(false);
+    setCitizenName(null);
+    setConvo([]);
+    setTurns([]);
+    pendingHistoryRef.current = {};
+  }
 
   const examples = ["What's the income threshold for the Inflation Allowance?", "My Fuel Allowance was stopped incorrectly."];
   const isBusy = turns.some((t) => t.loading || t.pendingLogin);
 
   return (
-    <div className="flex flex-col bg-white" style={{ height: "100%" }}>
+    <div className="relative flex flex-col bg-white" style={{ height: "100%" }}>
       {/* Widget header */}
       <div className="flex items-center justify-between px-4 py-3 text-white" style={{ background: `linear-gradient(135deg, ${MAROON}, ${MAROON_DARK})`, flexShrink: 0 }}>
         <div className="flex items-center gap-2.5">
@@ -648,9 +787,15 @@ function ChatWidget({ onClose }) {
           {authenticated && !isBusy && (
             <button onClick={handleSignOut} className="text-[10.5px] text-white/70 hover:text-white underline underline-offset-2">Sign out</button>
           )}
+          <button onClick={handleResetConversation} disabled={isBusy} title="Start a new conversation" className="text-white/80 hover:text-white disabled:opacity-40"><RefreshCw size={15} /></button>
+          <button onClick={() => setSettingsOpen(true)} title="LLM provider settings" className="text-white/80 hover:text-white"><Settings size={16} /></button>
           <button onClick={onClose} className="text-white/80 hover:text-white"><X size={17} /></button>
         </div>
       </div>
+
+      {settingsOpen && (
+        <SettingsPanel settings={llmSettings} onSave={handleSaveSettings} onClose={() => setSettingsOpen(false)} />
+      )}
 
       {/* Chat body */}
       <div ref={scrollRef} className="px-3.5 py-3.5" style={{ background: PAPER, flex: "1 1 auto", minHeight: 0, overflowY: "auto" }}>
@@ -979,11 +1124,12 @@ function Footer() {
 
 export default function MoCEWebsiteWithWidget() {
   const [open, setOpen] = useState(false);
-  const [widgetKey, setWidgetKey] = useState(0);
 
   function handleClose() {
+    // Just hides the panel — ChatWidget stays mounted so its auth state and
+    // conversation survive minimize/reopen. Only the explicit "Sign out"
+    // button (inside ChatWidget) should end the session.
     setOpen(false);
-    setWidgetKey((k) => k + 1); // remounts ChatWidget fresh — clears conversation + signs out
   }
 
   return (
@@ -1021,7 +1167,7 @@ export default function MoCEWebsiteWithWidget() {
           pointerEvents: open ? "auto" : "none",
         }}
       >
-        <ChatWidget key={widgetKey} onClose={handleClose} />
+        <ChatWidget onClose={handleClose} />
       </div>
 
       {/* Launcher button */}
