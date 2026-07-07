@@ -186,6 +186,15 @@ function mockEnterpriseData() {
 const MODEL = "claude-sonnet-5"; // real public API model — verify current model IDs at https://docs.claude.com if this changes
 const MOCK_CITIZEN_NAME = "Ahmed Al Mansoori";
 
+/* Tools that touch a specific citizen's case data or record a resolution.
+   The system prompt already tells the model not to call these unless
+   authenticated, but that's guidance, not enforcement — a model can ignore
+   it (e.g. a citizen pastes a reference number and a weaker model skips
+   straight to get_case_details). This list is the actual code-level gate
+   in runAgentLoop below, so unauthenticated case lookups are impossible
+   regardless of model behavior. */
+const PROTECTED_TOOLS = ["get_case_details", "list_citizen_cases", "submit_decision"];
+
 /* ---------------------------------------------------------------------- */
 /* LLM provider settings — user-supplied API keys, held only in           */
 /* sessionStorage (cleared when the tab closes) and sent per-request to    */
@@ -844,6 +853,20 @@ function ChatWidget({ onClose }) {
           updateTurn(turnId, { pendingLogin: true, loginPreface: call.preface, loading: false, expanded: false });
           setConvo(closedHistory);
           return;
+        }
+        if (call && PROTECTED_TOOLS.includes(call.name) && !authState.authenticated) {
+          // Hard gate: never run a case-lookup/decision tool while
+          // unauthenticated, no matter what the model tried to do. Bounce it
+          // back through request_login instead of executing the tool.
+          history = [...history, { role: "assistant", content: text + "</use_tool>" }];
+          history = [...history, {
+            role: "user",
+            content: `<tool_result name="${call.name}">${JSON.stringify({
+              error: "not_authenticated",
+              message: "The citizen is not authenticated. You must call request_login before accessing or acting on any case-specific data.",
+            })}</tool_result>`,
+          }];
+          continue;
         }
         if (call) {
           const result = runTool(turnId, call.name, call.args);
